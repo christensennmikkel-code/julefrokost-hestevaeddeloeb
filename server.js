@@ -8,6 +8,8 @@ const games = new Map();
 const clients = new Map();
 const POINTS_TO_FINISH = 120;
 const ROUND_MS = 18000;
+const REVEAL_MS = 3500;
+const PENALTY_MS = 12000;
 const COLORS = ['#e94d56','#f4ad45','#68d6c2','#79a7ff','#bf87ed','#f27cbe','#c3de67','#fd8e59','#84c6ef','#fff083'];
 const QUESTIONS = [
  {cat:'HURTIG HOVEDREGNING',q:'Hvad er 7 × 8?',a:['54','56','58','64'],ok:1},
@@ -30,32 +32,73 @@ const QUESTIONS = [
 function rid(bytes=9){return crypto.randomBytes(bytes).toString('hex')}
 function send(res,status,data){res.writeHead(status,{'content-type':'application/json; charset=utf-8','cache-control':'no-store'});res.end(JSON.stringify(data))}
 function parseBody(req){return new Promise((resolve,reject)=>{let s='';req.on('data',c=>{s+=c;if(s.length>20000){reject(new Error('For stor besked'));req.destroy();}});req.on('end',()=>{try{resolve(JSON.parse(s||'{}'))}catch{reject(new Error('Ugyldige data'))}});req.on('error',reject)})}
+function standings(g){return [...g.players].sort((a,b)=>b.score-a.score||a.joinOrder-b.joinOrder)}
 function publicGame(g,viewer){
- const index=g.index, q=index>=0 && index<QUESTIONS.length?QUESTIONS[index]:null;
- const isHost=viewer && viewer.role==='host';const isPlayer=viewer && viewer.role==='player';
+ const index=g.index,q=index>=0&&index<QUESTIONS.length?QUESTIONS[index]:null;
+ const isHost=viewer&&viewer.role==='host',isPlayer=viewer&&viewer.role==='player';
  const p=isPlayer?g.players.find(x=>x.token===viewer.token):null;
- const reveal=g.phase==='reveal'||g.phase==='finished';
- const answers=g.answers;
+ const reveal=['reveal','penalty','finished'].includes(g.phase);
  return {room:g.room,phase:g.phase,round:index+1,total:QUESTIONS.length,endsAt:g.endsAt,finish:POINTS_TO_FINISH,
- players:g.players.map(x=>({id:x.id,name:x.name,color:x.color,score:x.score,answered:!!answers[x.id],lastGain:x.lastGain})),
- question:q?{category:q.cat,text:q.q,options:q.a,...(reveal?{correct:q.ok}: {})}:null,
- myAnswer:p?(answers[p.id]?.choice ?? null):null,
- answeredCount:Object.keys(answers).length,
- ...(reveal?{results:g.players.map(x=>({id:x.id,choice:answers[x.id]?.choice??null,gain:x.lastGain}))}:{}) ,
- viewer:isHost?'host':isPlayer?'player':'guest',myId:p?.id||null,
- joinUrl:g.joinUrl
+ players:g.players.map(x=>({id:x.id,name:x.name,color:x.color,score:x.score,answered:!!g.answers[x.id],lastGain:x.lastGain,streak:x.streak})),
+ question:q?{category:q.cat,text:q.q,options:q.a,...(reveal?{correct:q.ok}:{})}:null,
+ myAnswer:p?(g.answers[p.id]?.choice??null):null,answeredCount:Object.keys(g.answers).length,
+ ...(reveal?{results:g.players.map(x=>({id:x.id,choice:g.answers[x.id]?.choice??null,gain:x.lastGain}))}:{}),
+ viewer:isHost?'host':isPlayer?'player':'guest',myId:p?.id||null,joinUrl:g.joinUrl,
+ penaltyEligible:p?g.penaltyEarned.includes(p.id):false,
+ penaltyUsed:p?!!g.penaltyChoices[p.id]:false,
+ penaltyDone:Object.keys(g.penaltyChoices).length,penaltyTotal:g.penaltyEarned.length,
+ penaltyEarners:g.penaltyEarned.map(id=>g.players.find(x=>x.id===id)?.name).filter(Boolean),
+ penaltyMessage:g.penaltyMessage||'',
  };
 }
 function notify(g){const set=clients.get(g.room);if(!set)return;for(const entry of Array.from(set)){try{entry.res.write('data: '+JSON.stringify(publicGame(g,entry.viewer))+'\n\n')}catch{set.delete(entry)}}}
 function verify(g,b){if(b.hostToken===g.hostToken)return {role:'host',token:b.hostToken};const p=g.players.find(x=>x.token===b.playerToken);return p?{role:'player',token:p.token}:null}
-function reveal(g){if(g.phase!=='question')return;g.phase='reveal';clearTimeout(g.timer);const q=QUESTIONS[g.index];for(const p of g.players){const a=g.answers[p.id];const gain=a&&a.choice===q.ok ? 8+Math.max(0,Math.ceil(4*(g.endsAt-a.at)/ROUND_MS)) :0;p.score+=gain;p.lastGain=gain;}notify(g)}
-function startRound(g){clearTimeout(g.timer);if(g.index+1>=QUESTIONS.length || g.players.some(p=>p.score>=POINTS_TO_FINISH)){g.phase='finished';g.endsAt=0;notify(g);return;}
- g.index++;g.phase='question';g.answers={};g.players.forEach(p=>p.lastGain=0);g.endsAt=Date.now()+ROUND_MS;g.timer=setTimeout(()=>reveal(g),ROUND_MS+150);notify(g)}
+function schedule(g,ms,callback){clearTimeout(g.timer);g.timer=setTimeout(()=>{if(games.get(g.room)===g)callback(g)},ms)}
+function finishOrNext(g){
+ if(g.index+1>=QUESTIONS.length||g.players.some(p=>p.score>=POINTS_TO_FINISH)){
+   g.phase='finished';g.endsAt=0;clearTimeout(g.timer);notify(g);return;
+ }
+ startRound(g);
+}
+function applyPenalty(g,attackerId,targetId){
+ const sorted=standings(g),i=sorted.findIndex(p=>p.id===targetId);
+ const target=sorted[i];if(!target)return 'Ugyldigt mål';
+ if(i===sorted.length-1)return `${target.name} ligger allerede sidst og kan ikke rykkes længere tilbage`;
+ const behind=sorted[i+1];
+ // Flyt hesten én placering ned i stillingen ved at lande lige bag den næste.
+ const previous=target.score;
+ target.score=Math.max(0,behind.score-1);
+ if(target.score===previous&&behind.score===0)return `${target.name} er allerede ved nul meter`;
+ return `${g.players.find(p=>p.id===attackerId).name} sender ${target.name} én placering tilbage!`;
+}
+function completePenalty(g){if(g.phase!=='penalty')return;clearTimeout(g.timer);g.endsAt=0;finishOrNext(g)}
+function openPenalty(g){if(g.phase!=='reveal')return;
+ if(!g.penaltyEarned.length){finishOrNext(g);return;}
+ g.phase='penalty';g.endsAt=Date.now()+PENALTY_MS;notify(g);
+ schedule(g,PENALTY_MS+100,completePenalty);
+}
+function reveal(g){if(g.phase!=='question')return;
+ g.phase='reveal';clearTimeout(g.timer);g.endsAt=0;
+ const q=QUESTIONS[g.index];g.penaltyEarned=[];g.penaltyChoices={};g.penaltyMessage='';
+ for(const p of g.players){
+  const a=g.answers[p.id];const correct=!!a&&a.choice===q.ok;
+  const gain=correct?8+Math.max(0,Math.ceil(4*(a.deadline-a.at)/ROUND_MS)):0;
+  p.score+=gain;p.lastGain=gain;p.streak=correct?p.streak+1:0;
+  if(correct&&p.streak%3===0&&g.players.length>1)g.penaltyEarned.push(p.id);
+ }
+ notify(g);schedule(g,REVEAL_MS,openPenalty);
+}
+function startRound(g){clearTimeout(g.timer);
+ if(g.index+1>=QUESTIONS.length||g.players.some(p=>p.score>=POINTS_TO_FINISH)){g.phase='finished';g.endsAt=0;notify(g);return;}
+ g.index++;g.phase='question';g.answers={};g.penaltyEarned=[];g.penaltyChoices={};g.penaltyMessage='';
+ g.players.forEach(p=>p.lastGain=0);
+ g.endsAt=Date.now()+ROUND_MS;schedule(g,ROUND_MS+150,reveal);notify(g);
+}
 function getGame(room){return games.get(String(room||'').trim().toUpperCase())}
 async function api(req,res,pathname){
  let b;try{b=await parseBody(req)}catch(e){return send(res,400,{error:e.message})}
  if(pathname==='/api/create'){
-  const room=crypto.randomBytes(3).toString('hex').toUpperCase();const g={room,hostToken:rid(16),players:[],index:-1,phase:'lobby',answers:{},endsAt:0,timer:null,joinUrl:''};
+  const room=crypto.randomBytes(3).toString('hex').toUpperCase();const g={room,hostToken:rid(16),players:[],index:-1,phase:'lobby',answers:{},endsAt:0,timer:null,joinUrl:'',penaltyEarned:[],penaltyChoices:{},penaltyMessage:''};
   g.joinUrl=`${req.headers['x-forwarded-proto']||'http'}://${req.headers.host}/?room=${room}`;games.set(room,g);return send(res,200,{room,hostToken:g.hostToken});
  }
  const g=getGame(b.room);if(!g)return send(res,404,{error:'Spillet findes ikke. Opret et nyt på værtsskærmen.'});
@@ -65,16 +108,16 @@ async function api(req,res,pathname){
   if(g.players.length>=10)return send(res,400,{error:'Der er allerede 10 spillere.'});
   const name=String(b.name||'').trim().slice(0,20).replace(/[<>]/g,'');if(name.length<2)return send(res,400,{error:'Skriv et navn på mindst 2 tegn.'});
   if(g.players.some(p=>p.name.toLowerCase()===name.toLowerCase()))return send(res,400,{error:'Navnet er allerede taget.'});
-  const p={id:rid(6),name,token:rid(16),score:0,color:COLORS[g.players.length],lastGain:0};g.players.push(p);send(res,200,{playerToken:p.token,playerId:p.id});notify(g);return;
+  const p={id:rid(6),name,token:rid(16),score:0,color:COLORS[g.players.length],joinOrder:g.players.length,lastGain:0,streak:0};g.players.push(p);send(res,200,{playerToken:p.token,playerId:p.id});notify(g);return;
  }
  const viewer=verify(g,b);if(!viewer)return send(res,403,{error:'Du har ikke adgang til dette spil. Prøv at joine igen.'});
  if(pathname==='/api/state')return send(res,200,publicGame(g,viewer));
  if(pathname==='/api/control'){
   if(viewer.role!=='host')return send(res,403,{error:'Kun værten kan styre løbet.'});
   if(b.action==='start'){if(g.phase!=='lobby')return send(res,400,{error:'Løbet er allerede startet.'});if(!g.players.length)return send(res,400,{error:'Mindst én hest skal deltage.'});startRound(g);}
-  else if(b.action==='next'){if(g.phase!=='reveal')return send(res,400,{error:'Afslør først resultatet.'});startRound(g)}
+  else if(b.action==='next'){return send(res,400,{error:'Opgaverne kører automatisk.'})}
   else if(b.action==='reveal'){reveal(g)}
-  else if(b.action==='restart'){clearTimeout(g.timer);g.phase='lobby';g.index=-1;g.answers={};g.endsAt=0;g.players.forEach(p=>{p.score=0;p.lastGain=0});notify(g)}
+  else if(b.action==='restart'){clearTimeout(g.timer);g.phase='lobby';g.index=-1;g.answers={};g.endsAt=0;g.penaltyEarned=[];g.penaltyChoices={};g.penaltyMessage='';g.players.forEach(p=>{p.score=0;p.lastGain=0;p.streak=0});notify(g)}
   else return send(res,400,{error:'Ukendt handling'});
   return send(res,200,{ok:true});
  }
@@ -83,7 +126,21 @@ async function api(req,res,pathname){
   if(g.phase!=='question'||Date.now()>g.endsAt)return send(res,400,{error:'Runden er lukket'});
   const p=g.players.find(x=>x.token===viewer.token);if(g.answers[p.id])return send(res,400,{error:'Du har allerede svaret'});
   if(!Number.isInteger(b.choice)||b.choice<0||b.choice>3)return send(res,400,{error:'Vælg en mulighed'});
-  g.answers[p.id]={choice:b.choice,at:Date.now()};send(res,200,{ok:true});if(Object.keys(g.answers).length===g.players.length)reveal(g);else notify(g);return;
+  g.answers[p.id]={choice:b.choice,at:Date.now(),deadline:g.endsAt};send(res,200,{ok:true});if(Object.keys(g.answers).length===g.players.length)reveal(g);else notify(g);return;
+ }
+ if(pathname==='/api/penalty'){
+  if(viewer.role!=='player')return send(res,403,{error:'Kun spillere kan vælge straf'});
+  if(g.phase!=='penalty')return send(res,400,{error:'Strafrunden er lukket'});
+  const p=g.players.find(x=>x.token===viewer.token);
+  if(!g.penaltyEarned.includes(p.id))return send(res,403,{error:'Du har ikke optjent en straf'});
+  if(g.penaltyChoices[p.id])return send(res,400,{error:'Du har allerede valgt en hest'});
+  const target=g.players.find(x=>x.id===b.targetId);
+  if(!target||target.id===p.id)return send(res,400,{error:'Vælg en anden hest'});
+  g.penaltyChoices[p.id]=target.id;
+  g.penaltyMessage=applyPenalty(g,p.id,target.id);
+  send(res,200,{ok:true});notify(g);
+  if(Object.keys(g.penaltyChoices).length===g.penaltyEarned.length)schedule(g,2500,completePenalty);
+  return;
  }
  send(res,404,{error:'Ikke fundet'});
 }

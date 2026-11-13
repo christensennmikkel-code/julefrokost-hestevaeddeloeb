@@ -1,25 +1,28 @@
-# 🏇 Julefrokost Hestevæddeløb — Online multiplayer
+# Hestevæddeløb – Autopilot + Sabotage
 
-Denne version er et **nyt og selvstændigt spil**. Dit eksisterende Julefrokost Royale-spil bliver ikke ændret.
+Online multiplayer til 1-10 ryttere. Kræver kun GitHub og Render, hvis du vil have det på nettet.
 
-## Sådan får du spillet online (Windows, uden installation)
+## Nye regler
 
-1. Udpak ZIP-filen i Windows (højreklik → **Udpak alle**).
-2. Gå til https://github.com/new og opret et **nyt** repository, fx `julefrokost-hestevaeddeloeb`.
-3. Klik på **uploading an existing file** i det tomme repository. Træk alle disse 5 elementer ind: `package.json`, `render.yaml`, `server.js`, `START-HER.md` og hele `public`-mappen. Vælg **Commit changes**.
-4. Gå til https://dashboard.render.com/ og vælg **New → Web Service**. Vælg dit **nye** GitHub-repository.
-5. Vælg **Language: Node**, **Branch: main**, **Root Directory: tom**, **Build Command: `npm install`**, **Start Command: `npm start`**, **Compute: Free**. Lad **Environment Variables** være tomme.
-6. Klik **Deploy Web Service**. Når Render viser **Live**, klik på den URL du får.
-7. På computeren / TV'et: Åbn `https://DIN-URL.onrender.com/host`. Klik **Opret et nyt væddeløb**.
-8. Deltagerne åbner spillerlinket fra værtsskærmen på deres telefoner, skriver navn og vælger **Deltag**. Alternativt kan de scanne QR-koden.
-9. Klik **Start løbet** på værtsskærmen. Hvert rigtigt svar flytter hesten 8–12 meter, afhængigt af hurtighed. En runde varer højst 18 sekunder. Når alle har svaret, afsløres svaret automatisk.
-10. Klik **Næste opgave** efter afsløringen. Den første hest over 120 meter vinder; ellers vinder hesten med flest meter efter 16 opgaver.
+- Værten trykker START én gang.
+- Hvert spørgsmål varer op til 18 sekunder; når alle har svaret, afsluttes spørgsmålet straks.
+- Svaret vises i 3,5 sekunder, og næste spørgsmål starter automatisk.
+- Rigtigt svar = 8-12 meter, afhængigt af svartid. Forkert eller manglende svar nulstiller din serie.
+- Efter **tre rigtige i træk** får rytteren en sabotage: vælg en anden hest på telefonen inden for 12 sekunder.
+- En saboteret hest rykkes **én placering ned på ranglisten** ved at få meter nok trukket fra til at placere den lige bag næste hest. Kan ikke flyttes længere ned end nul meter/sidstepladsen.
+- Sabotage optjenes igen efter 6, 9, 12 osv. rigtige i træk.
+- Løbet slutter automatisk, når nogen når 120 meter, eller alle 16 opgaver er brugt.
 
-### Test alene
-Du kan joine fra din egen mobil. Flere inkognitovinduer kan bruges som ekstra spillere. Løbet kan startes med én spiller, hvis du kun tester.
+## Opdater dit eksisterende GitHub-repository
 
-### Bemærk
-- Serveren kører på Renders gratis server. Den kan gå i dvale efter inaktivitet, og en genstart nulstiller igangværende løb. Åbn og test spillet før festen.
-- Sørg for, at du bruger **et nyt GitHub-repository og en ny Render-webservice**. Så beholder du det gamle Julefrokost Royale.
-- Der er højst 10 ryttere pr. løb. Navne, rumkode og spillerlogin ligger midlertidigt i serverens hukommelse.
-- Den lille QR-kode er lavet via en ekstern tjeneste. Linket fungerer, selv hvis QR-koden ikke indlæses.
+1. Pak ZIP-filen ud i Windows.
+2. Åbn det eksisterende GitHub-repository `julefrokost-hestevaeddeloeb`.
+3. Vælg **Add file > Upload files**.
+4. Træk **indholdet** af den udpakkede `hestevaeddeloeb-auto`-mappe ind (ikke selve mappen eller ZIP-filen).
+5. Sørg for at `server.js`, `package.json`, `render.yaml`, `START-HER.md` ligger direkte i roden, og at `index.html`, `host.html`, `app.js`, `style.css` ligger under `public/`.
+6. Bekræft ændringerne med **Commit changes**. Hvis GitHub ikke tillader overskrivning i uploaderen, kan du åbne hver eksisterende fil, trykke blyanten og indsætte indholdet fra den nye fil i editoren. De ændrede kodefiler er `server.js`, `public/app.js`, `public/style.css`.
+7. Render skal automatisk genudgive ændringerne – se **Deploys**, og vent på **Live**.
+
+## Vigtigt
+
+Spillet holder en igangværende runde i serverens hukommelse. Ved servergenstart vil rummet forsvinde. Gratis Render kan gå i dvale. Test inden julefrokosten.
